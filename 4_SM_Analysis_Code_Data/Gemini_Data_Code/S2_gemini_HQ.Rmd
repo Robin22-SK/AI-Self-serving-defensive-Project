@@ -1,0 +1,198 @@
+---
+title: "final_soft_launch_gmt"
+author: "yy_tw"
+date: "2026-10-31"
+output: html_document
+---
+
+```{r}
+# ==========================================
+# 0. Load Required Packages
+# ==========================================
+
+library(tidyverse)
+library(car)       # For Type III sums of squares (recommended for factorial designs)
+library(emmeans)   # For estimated marginal means and Tukey post-hocs
+
+# ==========================================
+# 1. Merge CSV Files and Add con_4 Column
+# ==========================================
+# Read the two CSV files from the working directory
+df_no_id <- read.csv("HQ_no_id_gm.csv")
+df_with_id <- read.csv("HQ_with_id_gm.csv")
+
+# Add the 'con_4' column
+df_no_id$con_4 <- 0
+df_with_id$con_4 <- 1
+
+# Merge the datasets (bind rows since structures are identical)
+HQ_merged_gm <- bind_rows(df_no_id, df_with_id)
+
+# Save the merged dataset to the working directory
+write.csv(HQ_merged_gm, "HQ_merged_gm.csv", row.names = FALSE)
+
+cat("Successfully merged", nrow(HQ_merged_gm), "total cases and saved as 'HQ_merged_gm.csv'.\n\n")
+```
+
+```{r}
+# ==========================================
+# 2. Data Preparation for ANOVA
+# ==========================================
+# Convert Independent Variables (IVs) to factors
+HQ_merged_gm$con_1 <- as.factor(HQ_merged_gm$con_1)
+HQ_merged_gm$con_2 <- as.factor(HQ_merged_gm$con_2)
+HQ_merged_gm$con_4 <- as.factor(HQ_merged_gm$con_4)
+
+# Define the list of 8 outcome variables
+dv_vars <- c("qual", "clar", "sign", "orig", "over", "conf", "alig", "comp")
+
+# Set contrast option for Type III ANOVA (handles unbalanced designs better if any exist)
+options(contrasts = c("contr.sum", "contr.poly"))
+```
+
+
+```{r}
+# ==========================================
+# 3. Factorial ANOVAs & 4. Post-Hoc Tests
+# ==========================================
+
+for (dv in dv_vars) {
+  cat("\n======================================================\n")
+  cat("ANALYSIS FOR OUTCOME VARIABLE:", toupper(dv), "\n")
+  cat("======================================================\n")
+  
+  # Fit the full 3-way ANOVA model: con_1 * con_2 * con_4 includes main effects, 
+  # two-way interactions, and the three-way interaction.
+  formula_str <- paste(dv, "~ con_1 * con_2 * con_4")
+  model <- aov(as.formula(formula_str), data = HQ_merged_gm)
+  
+  # Type III ANOVA table (using car::Anova)
+  anova_res <- Anova(model, type = "3")
+  print(anova_res)
+  
+  # Extract p-values to conditionally run post-hoc tests
+  p_values <- anova_res$`Pr(>F)`
+  effect_names <- rownames(anova_res)
+  
+  # Remove Residuals row for evaluation
+  valid_rows <- which(effect_names != "Residuals")
+  
+  cat("\n--- Tukey HSD Post-Hoc Results (for significant effects, p < 0.05) ---\n")
+  
+  has_significant <- FALSE
+  
+  for (i in valid_rows) {
+    p_val <- p_values[i]
+    effect <- effect_names[i]
+    
+    if (!is.na(p_val) && p_val < 0.05) {
+      has_significant <- TRUE
+      cat(sprintf("\n[Significant Effect Found] %s (p = %.4f)\n", effect, p_val))
+      
+      # Run Tukey pairwise comparisons based on which effect is significant
+      if (effect == "con_1") {
+        emm <- emmeans(model, ~ con_1)
+        print(pairs(emm, adjust = "tukey"))
+      } else if (effect == "con_2") {
+        emm <- emmeans(model, ~ con_2)
+        print(pairs(emm, adjust = "tukey"))
+      } else if (effect == "con_4") {
+        emm <- emmeans(model, ~ con_4)
+        print(pairs(emm, adjust = "tukey"))
+      } else if (effect == "con_1:con_2") {
+        emm <- emmeans(model, ~ con_1 | con_2)
+        print(pairs(emm, adjust = "tukey"))
+      } else if (effect == "con_1:con_4") {
+        emm <- emmeans(model, ~ con_1 | con_4)
+        print(pairs(emm, adjust = "tukey"))
+      } else if (effect == "con_2:con_4") {
+        emm <- emmeans(model, ~ con_2 | con_4)
+        print(pairs(emm, adjust = "tukey"))
+      } else if (effect == "con_1:con_2:con_4") {
+        emm <- emmeans(model, ~ con_1 | con_2 | con_4)
+        print(pairs(emm, adjust = "tukey"))
+      }
+    }
+  }
+  
+  if (!has_significant) {
+    cat("\nNo significant omnibus effects found for", dv, ".\n")
+    cat("Exploring exploratory pairwise comparisons across main group combinations:\n")
+    # Exploratory pairwise comparisons as requested when no omnibus effect is significant:
+    emm_expl <- emmeans(model, ~ con_1 * con_2 * con_4)
+    print(pairs(emm_expl, adjust = "tukey"))
+  }
+}
+
+```
+
+```{r}
+# ==========================================
+# 5. Visualization of Significant Effects
+# ==========================================
+# 1A. ANOVA Model & Post-Hoc for conf
+model_conf <- aov(conf ~ con_1 * con_2 * con_4, data = HQ_merged_gm)
+cat("--- Type III ANOVA Table for CONF ---\n")
+print(Anova(model_conf, type = "3"))
+
+cat("\n--- Pairwise Comparisons (con_1 on CONF) ---\n")
+emm_conf_con1 <- emmeans(model_conf, ~ con_1)
+print(pairs(emm_conf_con1, adjust = "tukey"))
+
+#con_1 on conf
+con1_labels <- c("0" = "Human-Only-contributed (0)", 
+                 "1" = "Reviewer-Model-assisted (1)", 
+                 "2" = "Other-Model-assisted (2)")
+
+
+ggplot(HQ_merged_gm, aes(x = con_1, y = conf, fill = con_1)) +
+  geom_boxplot(alpha = 0.4, outlier.shape = NA, width = 0.4) +
+  geom_jitter(width = 0.15, alpha = 0.3, size = 1.5, color = "darkblue") +
+  stat_summary(fun = mean, geom = "point", shape = 18, size = 3.5, color = "black") +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.1, color = "black", linewidth = 0.8) +
+  scale_x_discrete(labels = con1_labels) +
+  scale_fill_manual(values = c("#6BAED6", "#3182BD", "#08519C")) +
+  labs(
+    title = "Effect of Contributor on Confidence",
+    subtitle = "Boxplot + Raw Points + Black Diamond (Mean) ± Standard Error (SE)",
+    x = "Contributor Condition",
+    y = "Confidence Score"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+```{r}
+#Con_1 on Qual
+model_qual <- aov(qual ~ con_1 * con_2 * con_4, data = HQ_merged_gm)
+cat("\n======================================================\n")
+cat("--- Type III ANOVA Table for QUAL ---\n")
+print(Anova(model_qual, type = "3"))
+
+cat("\n--- Pairwise Comparisons (con_1 on QUAL) ---\n")
+emm_qual_con1 <- emmeans(model_qual, ~ con_1)
+print(pairs(emm_qual_con1, adjust = "tukey"))
+
+# 2B. Visualization for qual
+ggplot(HQ_merged_gm, aes(x = con_1, y = qual, fill = con_1)) +
+  geom_boxplot(alpha = 0.4, outlier.shape = NA, width = 0.4) +
+  geom_jitter(width = 0.15, alpha = 0.3, size = 1.5, color = "darkgreen") +
+  stat_summary(fun = mean, geom = "point", shape = 18, size = 3.5, color = "darkred") +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.1, color = "darkred", linewidth = 0.8) +
+  scale_x_discrete(labels = con1_labels) +
+  scale_fill_manual(values = c("#74C476", "#31A354", "#006D2C")) +
+  labs(
+    title = "Effect of con_1 on Quality (qual)",
+    subtitle = "Boxplot + Raw Points + Red Diamond (Mean) ± Standard Error (SE)",
+    x = "con_1 Condition",
+    y = "Quality Score (qual)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+
+
+
+
+
