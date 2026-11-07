@@ -1,0 +1,153 @@
+---
+title: "final_soft_launch_gpt"
+author: "yy_tw"
+date: "2026-10-31"
+output: html_document
+---
+
+```{r}
+# ==========================================
+# 0. Load Required Packages
+# ==========================================
+
+library(tidyverse)
+library(car)       # For Type III sums of squares (recommended for factorial designs)
+library(emmeans)   # For estimated marginal means and Tukey post-hocs
+
+# ==========================================
+# 1. Merge CSV Files and Add con_4 Column
+# ==========================================
+# Read the two CSV files from the working directory
+df_no_id <- read.csv("HQ_no_id_gp.csv")
+df_with_id <- read.csv("HQ_with_id_gp.csv")
+
+# Add the 'con_4' column
+df_no_id$con_4 <- 0
+df_with_id$con_4 <- 1
+
+# Merge the datasets (bind rows since structures are identical)
+HQ_merged_gp <- bind_rows(df_no_id, df_with_id)
+
+# Save the merged dataset to the working directory
+write.csv(HQ_merged_gp, "HQ_merged_gp.csv", row.names = FALSE)
+
+cat("Successfully merged", nrow(HQ_merged_gp), "total cases and saved as 'HQ_merged_gp.csv'.\n\n")
+```
+
+```{r}
+# ==========================================
+# 2. Data Preparation for ANOVA
+# ==========================================
+# Convert Independent Variables (IVs) to factors
+HQ_merged_gp$con_1 <- as.factor(HQ_merged_gp$con_1)
+HQ_merged_gp$con_2 <- as.factor(HQ_merged_gp$con_2)
+HQ_merged_gp$con_4 <- as.factor(HQ_merged_gp$con_4)
+
+# Define the list of 8 outcome variables
+dv_vars <- c("qual", "clar", "sign", "orig", "over", "conf", "alig", "comp")
+
+# Set contrast option for Type III ANOVA (handles unbalanced designs better if any exist)
+options(contrasts = c("contr.sum", "contr.poly"))
+```
+
+
+```{r}
+# ==========================================
+# 3. Factorial ANOVAs & 4. Post-Hoc Tests
+# ==========================================
+
+for (dv in dv_vars) {
+  cat("\n======================================================\n")
+  cat("ANALYSIS FOR OUTCOME VARIABLE:", toupper(dv), "\n")
+  cat("======================================================\n")
+  
+  # Fit the full 3-way ANOVA model: con_1 * con_2 * con_4 includes main effects, 
+  # two-way interactions, and the three-way interaction.
+  formula_str <- paste(dv, "~ con_1 * con_2 * con_4")
+  model <- aov(as.formula(formula_str), data = HQ_merged_gp)
+  
+  # Type III ANOVA table (using car::Anova)
+  anova_res <- Anova(model, type = "3")
+  print(anova_res)
+  
+  # Extract p-values to conditionally run post-hoc tests
+  p_values <- anova_res$`Pr(>F)`
+  effect_names <- rownames(anova_res)
+  
+  # Remove Residuals row for evaluation
+  valid_rows <- which(effect_names != "Residuals")
+  
+  cat("\n--- Tukey HSD Post-Hoc Results (for significant effects, p < 0.05) ---\n")
+  
+  has_significant <- FALSE
+  
+  for (i in valid_rows) {
+    p_val <- p_values[i]
+    effect <- effect_names[i]
+    
+    if (!is.na(p_val) && p_val < 0.05) {
+      has_significant <- TRUE
+      cat(sprintf("\n[Significant Effect Found] %s (p = %.4f)\n", effect, p_val))
+      
+      # Run Tukey pairwise comparisons based on which effect is significant
+      if (effect == "con_1") {
+        emm <- emmeans(model, ~ con_1)
+        print(pairs(emm, adjust = "tukey"))
+      } else if (effect == "con_2") {
+        emm <- emmeans(model, ~ con_2)
+        print(pairs(emm, adjust = "tukey"))
+      } else if (effect == "con_4") {
+        emm <- emmeans(model, ~ con_4)
+        print(pairs(emm, adjust = "tukey"))
+      } else if (effect == "con_1:con_2") {
+        emm <- emmeans(model, ~ con_1 | con_2)
+        print(pairs(emm, adjust = "tukey"))
+      } else if (effect == "con_1:con_4") {
+        emm <- emmeans(model, ~ con_1 | con_4)
+        print(pairs(emm, adjust = "tukey"))
+      } else if (effect == "con_2:con_4") {
+        emm <- emmeans(model, ~ con_2 | con_4)
+        print(pairs(emm, adjust = "tukey"))
+      } else if (effect == "con_1:con_2:con_4") {
+        emm <- emmeans(model, ~ con_1 | con_2 | con_4)
+        print(pairs(emm, adjust = "tukey"))
+      }
+    }
+  }
+  
+  if (!has_significant) {
+    cat("\nNo significant omnibus effects found for", dv, ".\n")
+    cat("Exploring exploratory pairwise comparisons across main group combinations:\n")
+    # Exploratory pairwise comparisons as requested when no omnibus effect is significant:
+    emm_expl <- emmeans(model, ~ con_1 * con_2 * con_4)
+    print(pairs(emm_expl, adjust = "tukey"))
+  }
+}
+
+```
+
+```{r}
+# ==========================================
+# 5. Visualization of Significant Effects
+# ==========================================
+ggplot(HQ_merged_gp, aes(x = con_4, y = conf, fill = con_4)) +
+  # Boxplot for distribution (medians & quartiles)
+  geom_boxplot(alpha = 0.4, outlier.shape = NA, width = 0.4) +
+  # Jittered individual data points
+  geom_jitter(width = 0.15, alpha = 0.3, size = 1.5, color = "darkblue") +
+  # Mean point (Red diamond)
+  stat_summary(fun = mean, geom = "point", shape = 18, size = 3.5, color = "black") +
+  # Standard Error (SE) Error Bars
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.1, color = "black", linewidth = 0.8) +
+  scale_x_discrete(labels = c("0" = "No ID (0)", "1" = "With ID (1)")) +
+  scale_fill_manual(values = c("#6BAED6", "#3182BD")) +
+  labs(
+    title = "Effect of ID Prompting Condition on Confidence",
+    subtitle = "Boxplot + Raw Points + Black Diamond (Mean) ± Standard Error (SE)",
+    x = "ID Prompting Condition",
+    y = "Confidence Score"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
